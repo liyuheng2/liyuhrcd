@@ -1,0 +1,11 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="First Real Data Check" type="PythonConfigurationType" factoryName="Python">
+    <module name="liyuhrcd" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
+    <option name="PARAMETERS" value="--datasets upmc_food101 --methods late fixed_ib full --smoke --device auto" />
+    <option name="SHOW_COMMAND_LINE" value="false" />
+    <method v="2" />
+  </configuration>
+</component>
