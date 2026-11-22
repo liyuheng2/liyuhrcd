@@ -129,7 +129,7 @@ class HCRDRIB(nn.Module):
         weight_l, weight_r = pair_mask * r, pair_mask * l
         numerator = (weight_l * r_c * share) @ self.incidence_l + (weight_r * r_c * (1 - share)) @ self.incidence_r
         denominator = weight_l @ self.incidence_l + weight_r @ self.incidence_r
-        responsibility = numerator / denominator.clamp_min(EPS)
+        responsibility = numerator / (denominator + EPS)
         reliability = t * (1 - responsibility)
         weights = mask * reliability
         mass = weights.sum(1, keepdim=True)

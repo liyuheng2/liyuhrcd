@@ -153,6 +153,9 @@ def open_video(path):
     command = ['ffmpeg', '-v', 'error', '-nostdin', '-threads', '1', '-filter_threads', '1', '-i', str(path)]
     video = decode(command + ['-an', '-vf', 'fps=1:start_time=0,scale=224:224',
                               '-frames:v', '6', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'])
+    if not video:
+        video = decode(command + ['-an', '-vf', 'scale=224:224', '-frames:v', '1',
+                                  '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'])
     audio = decode(command + ['-vn', '-t', '20', '-ac', '1', '-ar', '16000', '-f', 'f32le', '-'])
     pixels = np.frombuffer(video, np.uint8)
     frames = [] if not len(pixels) else [
