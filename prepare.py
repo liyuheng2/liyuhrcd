@@ -93,7 +93,7 @@ def meld_rows(root, annotations):
                 dialogue, utterance = r['Dialogue_ID'], r['Utterance_ID']
                 clip = f'dia{dialogue}_utt{utterance}'
                 matches = videos[clip]
-                accepted = {'train': {'train', 'train_splits'}, 'dev': {'dev', 'dev_splits'},
+                accepted = {'train': {'train', 'train_splits'}, 'dev': {'dev', 'dev_splits', 'dev_splits_complete'},
                             'test': {'test', 'test_splits', 'output_repeated_splits_test'}}[original]
                 candidates = [p for p in matches if accepted.intersection(p.relative_to(root).parts[:-1])]
                 if len(candidates) > 1:
