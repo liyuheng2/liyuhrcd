@@ -1,0 +1,22 @@
+{
+  "cmu_mosi": {
+    "train": "3066fffc3fd2cc10e422e250a4a27e229fa1946afdc03b8920715b1a81cdbc67",
+    "val": "c4b1534065ca52eaa17555a944d292024604c5a22c5ac20cc6b3edb9b46ba7f2",
+    "test": "7c32a75e54c293d6c5ccde5ab748d460512a495b845e8d2d85072cf63195354f"
+  },
+  "ch_sims": {
+    "train": "126b4bb85c53ed97f5f2646905b8f9f0b23f3de9b0afffa15caa691510a0b21a",
+    "val": "551f881e069be6d7abc9b36f19057f7e3f9df181227f6f3eb9cf90f2a133287c",
+    "test": "c606ac5504d654d707b2928d921da9deee14e324ff965612b10ef3d65a828af6"
+  },
+  "meld": {
+    "train": "e9fdedbc24a7020b74f9ca82bd46ef9645493191fc1a485b9faddacf643b26d7",
+    "val": "52fa6d2d3733ac35fccf0ae5a2dd1becf7424c896989352711b5a74aa607ac3a",
+    "test": "50786f23ca2a35f141baf6203f3d39b8af310941089a621fb37dfaec01fabbf4"
+  },
+  "iemocap": {
+    "train": "f1ad9199a26505b16c8dd8a6153e89e251f5a74307cc9f0abd976a55c5fff11f",
+    "val": "88e10c0e9958073c1782fbc9507461506311de36cb4c2706518bbde18c7e7595",
+    "test": "91b3e921254b3028a84371012a0980d6af099f4ecf67c0aeaf4381748fa80b60"
+  }
+}
