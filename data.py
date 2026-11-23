@@ -7,6 +7,10 @@ import torch
 
 SPLITS = ('train', 'val', 'test')
 BENCHMARKS = {
+    'cmu_mosi': ('text', 'audio', 'video'),
+    'ch_sims': ('text', 'audio', 'video'),
+    'iemocap': ('text', 'audio', 'video'),
+    'meld_small': ('text', 'audio'),
     'upmc_food101': ('image', 'text'),
     'n24news': ('image', 'text'),
     'meld': ('text', 'audio', 'video'),
