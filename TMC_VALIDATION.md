@@ -17,6 +17,7 @@ python prepare_tmc_features.py iemocap data/raw/iemocap/IEMOCAP_features.pkl
 python prepare_meld_mmalign.py data/raw/meld_mmalign
 python validate_tmc.py --datasets cmu_mosi --methods tmc full --device cpu --smoke
 python validate_tmc.py --device cpu
+python evaluate_tmc_shift.py
 ```
 
 PyCharm 提供 **TMC HCRD Smoke** 和 **TMC HCRD Full**。已有旧版 MELD 缓存时，可给四个准备命令传入 `--output data/tmc_features`，并在运行时加上 `--feature-dir data/tmc_features`。
@@ -44,4 +45,4 @@ AdamW 学习率 0.001，权重衰减 0.0001，批大小 128，隐藏宽度 128�
 
 `runs/tmc_hcrd/protocol` 包含每个训练单元的权重、`result.json` 及各条件的风险–覆盖率曲线。已完成单元按数据 SHA-256、设备、协议与配置校验后复用。汇总表 `summary.csv` 报告均值、种子间样本标准差和有效种子数。配对表 `paired.csv` 报告同种子差值以及双侧精确符号翻转检验，五对种子的最小双侧 p 值为 0.0625，p 值仅用于描述本轮配对结果。
 
-测试项包括干净特征、多级高斯噪声、未见坐标丢弃、逐模态污染与缺失、仅单模态和受控换配。主要指标为 Accuracy、Macro-F1、ECE、NLL、Brier 和 AURC。诊断指标包含污染检测、正常冲突基线、熵变化与残余熵的参考误差，以及原始 JSD 和额外冲突检出同类与异类换配的能力。实验结论适用于预提取特征以及这些受控干预。
+测试项包括干净特征、多级高斯噪声、未见坐标丢弃、逐模态污染与缺失、仅单模态和受控换配。主要指标为 Accuracy、Macro-F1、ECE、NLL、Brier 和 AURC。诊断指标包含污染检测、正常冲突基线、熵变化与残余熵的参考误差，以及原始 JSD 和额外冲突检出同类与异类换配的能力。`shift_detection.csv` 记录将同一批干净样本和受扰动样本混合后，用证据不确定性、最大类别概率和观测风险区分分布偏移的 AUROC 与 AUPRC。实验结论适用于预提取特征以及这些受控干预。
