@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TMC ACRIB IEMOCAP LOSO" type="PythonConfigurationType" factoryName="Python">
+    <module name="liyuhrcd" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/validate_tmc_acrib.py" />
+    <option name="PARAMETERS" value="--features data/crib_iemocap --folds 1 2 3 4 5 --seeds 11 --workers 5" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <method v="2" />
+  </configuration>
+</component>
