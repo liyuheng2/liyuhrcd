@@ -60,3 +60,7 @@ PyCharm 已提供相应 Run Configurations。完整数据预处理一次即可�
 `runs/fixed_v2/protocol/summary.csv` 是按数据集、方法、测试条件和指标汇总的均值、样本标准差与可用种子数。每个单元另存 `result.json`、模型权重及风险—覆盖率曲线。烟雾运行输出在 `smoke/`。复用已有结果前会检查协议、配置、设备和数据缓存 SHA-256。
 
 指标包括 Accuracy、Macro/Weighted-F1、NLL、Brier、ECE、分类别 ECE、错误检测 AUROC/AUPRC、AURC、选择性覆盖率、O/A/C 参考目标 MAE 和 Spearman、换配检测 AUROC/AUPRC、污染前后的目标模态权重、参数量、线性层 MACs、训练和推理耗时以及 CUDA 峰值显存。错误检测同时记录方法可靠性与最大分类概率。单类或常数输入下无定义的指标留空。耗时与 MACs 的范围是已提取特征后的模型。
+
+## TMC-HCRD-RIB 验证
+
+五种子消融、MELD 三模态特征准备及 PyCharm 运行配置见 [TMC-HCRD-RIB 验证协议](TMC_VALIDATION.md)。
