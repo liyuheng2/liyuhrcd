@@ -1,0 +1,9 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="TMC CRIB v2 Full" type="PythonConfigurationType" factoryName="Python">
+    <module name="liyuhrcd" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/validate_tmc_crib.py" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <method v="2" />
+  </configuration>
+</component>
