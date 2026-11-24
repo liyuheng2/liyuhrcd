@@ -23,7 +23,7 @@ SEEDS = (11, 22, 33, 44, 55)
 PROTOCOL = 'tmc-hcrd-feature-v1'
 
 
-def fit(model, train, seed, settings, device):
+def fit(model, train, seed, settings, device, select=None, clean_only=False, modality_dropout=True):
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings.lr, weight_decay=settings.weight_decay)
     teacher = None
     classification_epoch = 0
@@ -40,14 +40,21 @@ def fit(model, train, seed, settings, device):
             model.train()
             total = torch.zeros((), device=device)
             for *clean, mask, y, _ in loader:
-                if phase == 'clean':
+                if phase == 'clean' or clean_only:
                     current = clean
+                    strength = torch.zeros_like(mask, dtype=torch.float32)
                 else:
-                    current, mask, strength = training_batch(clean, mask, rng)
+                    current, mask, strength = training_batch(clean, mask, rng, modality_dropout)
                 current = [x.to(device) for x in current]
                 mask, y = mask.to(device), y.to(device)
                 output = model(current, mask, warmup=phase == 'clean', risk_only=phase == 'risk')
-                loss = task_loss(output, y, mask, classification_epoch) if phase != 'risk' else 0
+                classifier = getattr(model, 'training_loss', None)
+                if phase == 'risk':
+                    loss = 0
+                elif classifier is None:
+                    loss = task_loss(output, y, mask, classification_epoch)
+                else:
+                    loss = classifier(output, y, mask, classification_epoch)
                 if teacher is not None:
                     refs = model.references(teacher, [x.to(device) for x in clean], current)
                     loss = loss + settings.gamma * model.risk_loss(output, mask, strength.to(device),
@@ -60,6 +67,8 @@ def fit(model, train, seed, settings, device):
                 raise FloatingPointError(f'{phase} epoch {epoch + 1}: non-finite loss')
             if phase != 'risk':
                 classification_epoch += 1
+            if phase == 'joint' and select is not None and select(model):
+                return teacher
             if epoch == 0 or (epoch + 1) % 5 == 0 or epoch + 1 == epochs:
                 print(f'  {phase} {epoch + 1}/{epochs} loss={float(total) / len(train[2]):.5f}', flush=True)
     return teacher

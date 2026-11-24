@@ -74,8 +74,8 @@ def inject(clean, mask, strength, rng, kind='gaussian'):
     return polluted
 
 
-def training_batch(clean, original_mask, rng):
-    keep = original_mask & (torch.rand(original_mask.shape, generator=rng) >= 0.15)
+def training_batch(clean, original_mask, rng, modality_dropout=True):
+    keep = original_mask & ((torch.rand(original_mask.shape, generator=rng) >= 0.15) | (not modality_dropout))
     empty = ~keep.any(1)
     keep[empty, random_index(original_mask, rng)[empty]] = True
     levels = torch.tensor([0, 0.2, 0.5, 0.9])
@@ -107,14 +107,18 @@ def condition(data, kind, argument=None):
     elif kind == 'only':
         mask.zero_()
         mask[:, argument] = original[:, argument]
-    elif kind == 'conflict':
+    elif kind in {'conflict', 'conflict_adjacent'}:
         inputs = [x.clone() for x in clean]
         target_mod = random_index(mask, rng)
         is_cross_label = torch.rand(len(labels), generator=rng) < 0.5
+        if kind == 'conflict_adjacent':
+            is_cross_label.fill_(True)
         for i in range(mask.shape[1]):
             present = mask[:, i].nonzero().flatten()
             groups = {int(c): present[labels[present] == c] for c in labels.unique()}
             candidates = {c: present[labels[present] != c] for c in groups}
+            if kind == 'conflict_adjacent':
+                candidates = {c: present[(labels[present] - c).abs() == 1] for c in groups}
             for row in ((target_mod == i) & (mask.sum(1) > 1)).nonzero().flatten().tolist():
                 c = int(labels[row])
                 pool = candidates[c] if is_cross_label[row] else groups[c][groups[c] != row]

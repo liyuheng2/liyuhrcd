@@ -70,7 +70,7 @@ class TMCHCRD(Baseline):
         self.register_buffer('other', 1 - torch.eye(len(dims)))
         if self.uses_risk:
             self.observation = nn.Linear(width, 1)
-            self.rib = RiskBottleneck(method != 'hcrd', latent)
+            self.rib = RiskBottleneck(method not in {'hcrd', 'hcrd_equal'}, latent)
 
     @property
     def uses_risk(self):
@@ -122,7 +122,11 @@ class TMCHCRD(Baseline):
             responsibility = ((excess * share * trust[:, j]) @ self.pair_i
                               + (excess * (1 - share) * trust[:, i]) @ self.pair_j)
             responsibility = responsibility / (trust_sum + EPS)
-            if self.method in {'full', 'no_o', 'no_a'}:
+            if self.method.endswith('_equal'):
+                incidence = self.pair_i + self.pair_j
+                equal = (excess @ incidence) / (pair_mask.float() @ incidence).clamp_min(1)
+                discount = trust / (1 + equal)
+            elif self.method in {'full', 'no_o', 'no_a'}:
                 discount = trust / (1 + responsibility)
             else:
                 discount = trust
@@ -147,18 +151,26 @@ class TMCHCRD(Baseline):
         a = (result['delta'] - delta).square()
         c = (result['normal'] - normal).square()
         risk = (mean_valid(o, mask) + mean_valid(a, mask) + mean_valid(c, pair)) / 3
-        wa = wc = 1
-        if self.method not in {'fixed_ib', 'hcrd'}:
-            with torch.no_grad():
-                c_proxy = (result['raw'] - normal).clamp(0, 1) * pair
-                count = pair.float() @ (self.pair_i + self.pair_j)
-                c_modal = c_proxy @ (self.pair_i + self.pair_j) / count.clamp_min(1)
-                support = strength * (1 - entropy_clean)
-                wa = ((1 + support) / (1 + c_modal)).clamp(0.5, 2)
-                wc = ((1 + (support[:, self.i] + support[:, self.j]) / 2)
-                      / (1 + c_proxy)).clamp(0.5, 2)
+        wa, wc = self.kl_weights(result, strength, normal, entropy_clean, mask)
         kl = (mean_valid(wa * result['kl_a'], mask) + mean_valid(wc * result['kl_c'], pair)) / 2
         return risk + beta * kl
+
+    def kl_weights(self, result, strength, normal, entropy_clean, mask):
+        if self.method in {'fixed_ib', 'hcrd', 'fixed_equal', 'hcrd_equal'}:
+            return 1, 1
+        return self.dynamic_weights(result, strength, normal, entropy_clean)
+
+    @torch.no_grad()
+    def dynamic_weights(self, result, strength, normal, entropy_clean):
+        pair = result['pair_mask']
+        c_proxy = (result['raw'] - normal).clamp(0, 1) * pair
+        incidence = self.pair_i + self.pair_j
+        count = pair.float() @ incidence
+        c_modal = c_proxy @ incidence / count.clamp_min(1)
+        support = strength * (1 - entropy_clean)
+        wa = ((1 + support) / (1 + c_modal)).clamp(0.5, 2)
+        wc = ((1 + (support[:, self.i] + support[:, self.j]) / 2) / (1 + c_proxy)).clamp(0.5, 2)
+        return wa, wc
 
 
 def task_loss(result, y, mask, epoch):
