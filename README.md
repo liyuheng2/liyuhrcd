@@ -68,3 +68,7 @@ PyCharm 已提供相应 Run Configurations。完整数据预处理一次即可�
 ## TMC-HCRD-CRIB v2 验证
 
 固定参数、数据准备、PyCharm 复现与消融定义见 [实验协议](TMC_CRIB.md)。四数据集主实验和 IEMOCAP 跨会话结果见 [验证报告](results/tmc_crib/REPORT.md)。
+
+## TMC-HCRD-DCIB v3 验证
+
+双目标信息瓶颈、解析证据折扣和独立校准见 [实验协议](TMC_DCIB.md)。PyCharm 运行配置为 **TMC DCIB v3 Full**，汇总报告生成在 `results/tmc_dcib/REPORT.md`。
