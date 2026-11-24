@@ -5,6 +5,7 @@
 打开项目目录并选择已安装 `requirements.txt` 的 Python 3.12 解释器。项目工作目录为仓库根目录。共享 PyCharm 运行配置 **TMC ACRIB Full** 执行四数据集五种子主实验。
 
 ```powershell
+python -m unittest -v test_tmc_acrib
 python validate_tmc_acrib.py --smoke --datasets cmu_mosi --seeds 11 --workers 1
 python validate_tmc_acrib.py --workers 8
 python summarize_tmc_acrib.py
@@ -12,7 +13,7 @@ python summarize_tmc_acrib.py
 
 使用现有 `data/extended/{cmu_mosi,ch_sims,meld,iemocap}/{train,val,test}.npz`。每个 NPZ 需要 `x0,x1,x2,mask,y,ids,groups`。三模态顺序为文本、音频、视觉。数据加载器校验跨划分的组和样本 ID，并仅根据训练划分拟合标准化统计。CMU-MOSI 为去除零分后的二分类，CH-SIMS 为五分类，MELD 为七分类，IEMOCAP 为六分类。使用原有三模态缓存时，各数据集沿用此前 TMC-CRIB 实验划分。IEMOCAP 另有 **TMC ACRIB IEMOCAP LOSO** 运行配置。该配置用现有 `data/crib_iemocap` 缓存在种子 11 下逐一留出五个会话，文本特征为无标签的转录哈希特征。
 
-主实验每个数据集、种子和方法保存独立 JSON、训练日志、阈值校准结果、特征 SHA-256 和模型权重。重复运行时复用元数据匹配的完整单元。汇总程序要求四数据集的 260 个单元齐全，生成 `results/tmc_acrib/REPORT.md` 和逐种子逐条件的 `metrics.csv`。数据、模型权重和逐单元运行目录保存在本地。
+主实验每个数据集、种子和方法保存独立 JSON、训练日志、阈值校准结果、特征 SHA-256 和模型权重。重复运行时复用元数据匹配的完整单元。汇总程序要求四数据集的 280 个单元齐全，生成 `results/tmc_acrib/REPORT.md` 和逐种子逐条件的 `metrics.csv`。数据、模型权重和逐单元运行目录保存在本地。
 
 ```powershell
 python validate_tmc_acrib.py --features data/crib_iemocap --folds 1 2 3 4 5 --seeds 11 --workers 5

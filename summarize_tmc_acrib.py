@@ -112,11 +112,22 @@ def report(records, loso):
         return average([dict(flatten(row)).get(field) for row in diagnosis(dataset, method, scenario, probe)])
 
     n = len(records)
+    clean_delta = [100 * (average(metric(d, 'acrib', 'accuracy')) - average(metric(d, 'fixed_acrib', 'accuracy')))
+                   for d in DATASETS]
+    retain = sum(row['threshold'] is None for (_, _, method), row in records.items() if method == 'acrib')
+    decisions = len(DATASETS) * len(SEEDS)
     lines = [
         '# TMC-HCRD-ACRIB 固定参数验证',
         '',
         f'完成 {n} 个训练单元。每个数据集使用五个随机种子，所有方法复用相同的特征缓存和原始划分。',
         '表中分类指标为五种子均值，Accuracy 和 Macro-F1 以百分比表示。详细逐种子、条件、融合方式和诊断指标见本地生成的 `metrics.csv`。',
+        '',
+        '## 主要结果',
+        '',
+        '冻结 ACRIB 相对容量匹配的 Fixed-ACRIB，干净准确率差值为 ' +
+        '、'.join(f'{DISPLAY[d]} {v:+.2f} 个百分点' for d, v in zip(DATASETS, clean_delta)) + '。',
+        f'验证集在 {decisions} 个数据集与种子组合中有 {retain} 个选择保留全部证据。',
+        '固定门控按训练集的平均容量拟合。实测 KL 随方法变化，因此配对差值也包含信息压缩强度差异。',
         '',
         '## 原始测试集',
         '',
@@ -198,6 +209,8 @@ def report(records, loso):
                                             ('unseen_dropout_0.5', 'accuracy'), ('swap', 'accuracy')]]
             lines.append(f'| {method} | ' + ' | '.join(format_value(v, 2) for v in values) + ' |')
     lines += [
+        '',
+        '## 潜变量干预',
         '',
         '以下诊断使用冻结 ACRIB 的同一检查点。污染 AUROC 来自未知坐标丢弃，冲突和收益指标来自换配条件。',
         '',
