@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 PROTOCOL = 'v3s-fixed-1'
 FOLDS = 3
 TRAIN_VIEWS = 4
+EVAL_BATCH = 1024
 FUSIONS = ('uniform', 'original_csf', 'softmax', 'conservative', 'oracle')
 PAIR_CONDITIONS = ('clean', 'gaussian_0.9', 'unseen_dropout_0.5', 'random_missing_0.8', 'conflict')
 
@@ -287,7 +288,8 @@ def fit(model, banks, settings, seed, device, eager):
 
 
 @torch.inference_mode()
-def evaluation_data(split, teacher, settings, device, modalities, smoke, pairs, diagnostics):
+def evaluation_data(split, teacher, device, modalities, smoke, pairs):
+    clean_p_all = teacher_predictions(teacher, [x.to(device) for x in split[0]], EVAL_BATCH)
     for key, kind, argument in evaluation_plan(modalities, smoke):
         views, mask, _, swapped, cross = condition(split, kind, argument)
         valid = mask.any(1)
@@ -295,16 +297,13 @@ def evaluation_data(split, teacher, settings, device, modalities, smoke, pairs, 
             continue
         current = [x[valid].to(device) for x in views]
         keep, y, swapped = mask[valid].to(device), split[2][valid].to(device), swapped[valid].to(device)
-        target = None
-        if diagnostics:
-            clean = [x[valid].to(device) for x in split[0]]
-            clean_p = teacher_predictions(teacher, clean, settings.batch)
-            p = teacher_predictions(teacher, current, settings.batch)
-            source_p = torch.where(swapped[..., None], p, clean_p)
-            source_y = y[:, None].expand_as(keep).clone()
-            # A on replaced modalities needs the donor label. The legacy evaluator does not
-            # expose donor indices, so A is scored only on unchanged modalities here.
-            target = task_targets(source_p, p, clean_p, source_y, y, keep, swapped, *pairs)
+        clean_p = clean_p_all[valid.to(device)]
+        p = clean_p if views is split[0] else teacher_predictions(teacher, current, EVAL_BATCH)
+        source_p = torch.where(swapped[..., None], p, clean_p)
+        source_y = y[:, None].expand_as(keep)
+        # A on replaced modalities needs the donor label. The legacy evaluator does not
+        # expose donor indices, so A is scored only on unchanged modalities here.
+        target = task_targets(source_p, p, clean_p, source_y, y, keep, swapped, *pairs)
         yield key, current, keep, y, swapped, cross[valid].to(device), target, float(valid.float().mean())
 
 
@@ -361,20 +360,22 @@ def risk_metrics(pred, targets, mask, swapped, pairs, active):
 def evaluate(model, cases, val, settings, rules, diagnostics):
     model.eval()
     val_views, val_mask, _ = val
-    single, utility, risks, conflict = predictions(model, val_views, val_mask, settings.batch)
+    single, utility, risks, conflict = predictions(model, val_views, val_mask, EVAL_BATCH)
     thresholds = {rule: float(np.quantile(fused_probabilities(single, utility, risks, conflict, val_mask,
                                                              rule).amax(1).cpu(), 0.2))
                   for rule in rules if rule != 'oracle'}
     summaries = {rule: {} for rule in rules}
     curves = {}
     pairs = model.left, model.right
-    times = []
+    clean_ms = None
     for key, views, mask, y, swapped, cross, targets, fraction in cases:
-        synchronize(mask.device)
-        start = perf_counter()
-        single, utility, risks, conflict = predictions(model, views, mask, settings.batch)
-        synchronize(mask.device)
-        times.append((perf_counter() - start) / len(y))
+        single, utility, risks, conflict = predictions(model, views, mask, EVAL_BATCH)
+        if key == 'clean':
+            synchronize(mask.device)
+            start = perf_counter()
+            predictions(model, views, mask, settings.batch)
+            synchronize(mask.device)
+            clean_ms = (perf_counter() - start) / len(y) * 1000
         for rule in rules:
             oracle = 2 * targets[3] - 1 if rule == 'oracle' else None
             p = fused_probabilities(single, utility, risks, conflict, mask, rule, oracle)
@@ -403,7 +404,7 @@ def evaluate(model, cases, val, settings, rules, diagnostics):
     for stats in summaries.values():
         worst = min(case['accuracy'] for key, case in stats.items() if key != 'clean')
         stats['clean']['worst_perturbation_accuracy'] = worst
-    return summaries, curves, thresholds, float(np.median(times) * 1000)
+    return summaries, curves, thresholds, clean_ms
 
 
 def on_device(split, device):
@@ -475,13 +476,13 @@ def run_method(model, banks, make_cases, val, settings, seed, device, directory,
     peak = torch.cuda.max_memory_allocated(device) / 1024 ** 2 if device.type == 'cuda' else None
     measurements = {}
     if model.method == 'v3s_fixed':
-        measurements['frozen'], *_ = evaluate(frozen, make_cases(True), val, settings, FUSIONS, False)
+        measurements['frozen'], *_ = evaluate(frozen, make_cases(), val, settings, FUSIONS, False)
         measurements['joint'], curves, thresholds, inference_ms = evaluate(
-            model, make_cases(True), val, settings, FUSIONS, True)
+            model, make_cases(), val, settings, FUSIONS, True)
         metrics = measurements['joint']['conservative']
     else:
         final, curves, thresholds, inference_ms = evaluate(
-            model, make_cases(True), val, settings, ('conservative',), True)
+            model, make_cases(), val, settings, ('conservative',), True)
         metrics = final['conservative']
     metrics['clean'].update(inference_ms_per_sample=inference_ms, shared_preparation_seconds=teacher_seconds)
     for key, curve in curves.items():
@@ -492,7 +493,7 @@ def run_method(model, banks, make_cases, val, settings, seed, device, directory,
     checkpoint.replace(directory / 'model.pt')
     report = dict(run=run, conditions=metrics, fusion=measurements, training=logs,
                   train_seconds=seconds, shared_preparation_seconds=teacher_seconds,
-                  inference_ms_per_sample=inference_ms,
+                  inference_ms_per_sample=inference_ms, inference_timing='clean_batch_128',
                   peak_cuda_mib=peak, val_80pct_threshold=thresholds['conservative'],
                   trainable_parameters=sum(p.numel() for p in model.parameters()),
                   linear_macs_per_sample=linear_macs(model, *val[:2], device))
@@ -544,6 +545,7 @@ def main(argv=None):
         pairs = tuple(torch.tensor(v, device=device) for v in zip(*combinations(range(len(dims)), 2)))
         for seed in seeds:
             shared = None
+            test_cases = None
             for method in methods:
                 directory = out / dataset / method / str(seed)
                 directory.mkdir(parents=True, exist_ok=True)
@@ -570,9 +572,12 @@ def main(argv=None):
                         model = V3S(deepcopy(backbone), len(dims), classes, method,
                                     settings.width, settings.latent).to(device)
 
-                        def make_cases(diagnostics):
-                            return evaluation_data(train_data['test'], backbone, settings, device,
-                                                   modalities, args.smoke, pairs, diagnostics)
+                        def make_cases():
+                            nonlocal test_cases
+                            if test_cases is None:
+                                test_cases = list(evaluation_data(train_data['test'], backbone, device,
+                                                                  modalities, args.smoke, pairs))
+                            return test_cases
 
                         report = run_method(model, banks, make_cases, val, settings, seed, device,
                                             directory, run, teacher_seconds, args.eager)

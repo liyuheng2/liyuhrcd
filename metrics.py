@@ -23,8 +23,9 @@ def risk_coverage(correct, score):
     sort = np.argsort(-score, kind='stable')
     ordered, errors = score[sort], (~correct[sort]).astype(float)
     bounds = np.r_[0, np.flatnonzero(ordered[1:] != ordered[:-1]) + 1, len(sort)]
-    for first, last in zip(bounds[:-1], bounds[1:]):
-        errors[first:last] = errors[first:last].mean()
+    lengths = np.diff(bounds)
+    if (lengths > 1).any():
+        errors = np.repeat(np.add.reduceat(errors, bounds[:-1]) / lengths, lengths)
     n = np.arange(1, len(sort) + 1)
     return n / len(sort), np.cumsum(errors) / n
 
@@ -33,9 +34,12 @@ def summarize(y, p, reliability, threshold=None):
     prediction, confidence = p.argmax(1), p.max(1)
     correct = prediction == y
     coverage_grid, risk = risk_coverage(correct, reliability)
-    maxprob_coverage, maxprob_risk = risk_coverage(correct, confidence)
     err = detection(~correct, -reliability)
-    maxprob_err = detection(~correct, -confidence)
+    if np.array_equal(reliability, confidence):
+        maxprob_coverage, maxprob_risk, maxprob_err = coverage_grid, risk, err
+    else:
+        maxprob_coverage, maxprob_risk = risk_coverage(correct, confidence)
+        maxprob_err = detection(~correct, -confidence)
     onehot = np.eye(p.shape[1], dtype=np.float32)[y]
     stats = {
         'n': int(len(y)),
@@ -70,3 +74,4 @@ def regression(target, prediction):
     if len(target) > 1 and np.ptp(target) > 0 and np.ptp(prediction) > 0:
         correlation = float(spearmanr(target, prediction).statistic)
     return {'mae': float(np.abs(target - prediction).mean()), 'spearman': correlation}
+
