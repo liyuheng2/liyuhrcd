@@ -1,0 +1,39 @@
+四个小规模数据集，固定参数特征级验证
+
+CMU-MOSI：文本、音频、视觉。MMSA aligned_50 特征，原始 train/valid/test。
+CH-SIMS：文本、音频、视觉。MMSA unaligned_39 特征。原划分源视频存在重合，
+改为 StratifiedGroupKFold 的固定五折源视频互斥划分：三折训练、一折验证、一折测试，种子 20261122。
+实际样本数为 1121/718/442，因各源视频大小不同，并非样本数严格 60/20/20。
+因此 CH-SIMS 数值不可直接与文献中的官方划分成绩比较。
+MELD-small：文本、音频。declare-lab/conv-emotion 发布的 MELD_features_raw.pkl。
+IEMOCAP：文本、音频、视觉。declare-lab/conv-emotion 发布的 IEMOCAP_features.pkl。
+MOSI、SIMS 用 sign(score)+1 转为负、零、正三类；其余使用原始情绪类别。
+MELD/IEMOCAP 保留发布版测试集，并从训练集按组固定留出 10% 验证集。
+数据加载器检查样本 ID 和组的交叉泄漏，失败时停止，不静默放行。
+
+不做超参数搜索。沿用仓库学习率 0.001、AdamW、batch 128、width 128、latent 16、
+beta 0.001、gamma 1、预热 5+5 轮、联合训练 30 轮、最终轮模型。
+随机种子 11、22、33、44、55。验证集只用于可靠性拒识阈值。
+该协议与原实验建议的 100 轮/early stopping 等设置不同，属于仓库固定参数初轮验证。
+
+完整矩阵运行 main.py --datasets cmu_mosi ch_sims meld_small iemocap --suite full --device cuda
+项目已在本机 PyCharm 打开，并提供 .run 运行配置；本次批量训练由本机项目解释器从命令行执行。
+结果目录 runs/small_fixed/protocol。smoke 目录仅为短流程验证，不可作为论文结果。
+对比方法是本仓库统一输入与掩码下的算法改写，不是作者官方代码的逐项原样复现。
+为减少等待，本轮存在多个训练进程并行使用 GPU；记录的训练/推理墙时受到资源竞争影响，
+不能直接作为论文中的独立效率排名。参数量与线性层 MACs 不受此影响。
+应在论文中明确标明这一限制，不能把结果直接与异构编码器的文献数值排名。
+
+本轮仅在预提取特征上加噪声、坐标丢弃、换配与模态缺失。
+不能据此声称验证了原始图像模糊、文本拼写错误、音频加噪或视频帧丢失。
+换配检测的阴性对照为同类别换配，它仍可能破坏真实配对关系；这不是“正常互补无害”的证明。
+现有 A_MAE 是熵变化预测误差，不应直接写成经 clip 后残余熵相对干净熵的 MAE_A。
+本轮未适配 DDEF、MIB、AEMRL，未进行 beta/gamma 网格搜索，也未完成原始媒体扰动与全部论文专项对照。
+四个数据集集中在情感/情绪领域，不能代替食品和新闻等跨领域泛化验证。
+公开特征可能来自已有监督编码器，沿用发布版 train/test，编码器训练细节需在论文正式实验中审计。
+
+来源：
+https://github.com/thuiar/MMSA
+https://huggingface.co/datasets/tamb2203579/CMU-MOSI
+https://huggingface.co/datasets/tamb2203579/CH-SIMS
+https://github.com/declare-lab/conv-emotion

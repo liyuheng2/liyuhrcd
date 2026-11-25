@@ -1,0 +1,48 @@
+EC-RIB task-risk validation (task-risk-fixed-1)
+
+Use the feature caches from SMALL_EXPERIMENT_PROTOCOL.txt. prepare_small.py
+can recreate an individual cache from the published feature files placed under
+data/raw/<dataset>. Keep the same cache files for the original and new runs.
+
+The four datasets are CMU-MOSI, CH-SIMS (source-video-disjoint split), MELD-small
+(text and audio), and IEMOCAP. Settings are inherited from main.Settings:
+AdamW, learning rate 0.001, batch 128, width 128, latent 16, beta 0.001,
+gamma 1, and 5 + 5 + 30 epochs for the EC-RIB models. Seeds: 11, 22, 33,
+44, 55. Use the final epoch and make no hyperparameter selections on test.
+
+Variants
+- task_uniform: new risk targets and fixed KL, with uniform fusion.
+- task_fixed: same architecture and objectives with 25% risk-based fusion
+  and 75% uniform fusion. The masked softmax uses temperature 0.25.
+- task_dynamic: task_fixed with sample-wise KL scales proportional to
+  1 / (1 + target), normalized within each active risk task and batch.
+- task_shuffled: task_dynamic with the scale assignments shuffled within a task.
+
+A copy of the classifier after clean warm-up supplies targets on training
+samples. O estimates bounded positive unimodal NLL increase, A estimates
+1 minus clean ground-truth probability, and C estimates bounded positive
+pair NLL increase. The teacher is frozen and used only in training. A separate
+pair head detects swaps. Swap donors are drawn from the training split and
+eligible swaps are sampled at a fixed probability of 0.25 for auxiliary risk
+supervision. Classification still uses the original noisy/dropout minibatch.
+The classifier uses detached fusion weights and maximum probability for rejection.
+
+Reproduction from the project root with a CUDA-capable interpreter:
+  python validate_improved.py --smoke --device cuda
+  python main.py --datasets cmu_mosi ch_sims meld_small iemocap --methods late concat gate tmc etmc qmf mmdynamics full fixed_ib no_ib no_csf --run-dir runs/small_fixed --device cuda
+  python validate_improved.py --device cuda
+
+If the 11 historical methods already exist in runs/small_fixed/protocol,
+the validation reuses their reports after checking feature fingerprints,
+settings, seeds and protocol version. The PyCharm configuration Task risk
+validation (CUDA) uses the project interpreter and supports resuming per-dataset
+runs under runs/task_risk_workers. The script writes summary.csv, paired.csv
+and COMPLETE.json under runs/task_risk_fixed/protocol by default.
+
+There are 80 new runs and 220 baseline runs in the matched matrix. Report clean
+and controlled feature perturbation metrics, including maximum-probability
+rejection. Preserve the distinction between the legacy cross-label vs same-label
+swap AUROC and the new paired clean-vs-swapped AUROC. Five-seed paired confidence
+intervals are exploratory. The baseline data protocol, test-split reuse and
+feature-level perturbations limit claims about independent confirmation,
+real-media robustness and real-world semantic conflict detection.

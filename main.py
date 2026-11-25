@@ -5,12 +5,24 @@ from dataclasses import asdict, dataclass
 from hashlib import file_digest
 from itertools import combinations
 import json
+import os
+import sys
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
+from uuid import uuid4
 
 import numpy as np
+# Conda CUDA DLLs live in bin; a venv launched by PyCharm does not activate Conda.
+_cuda_bins = [Path(sys.base_prefix) / 'bin', Path(sys.prefix) / 'Lib/site-packages/nvidia/cuda_nvrtc/bin']
+_dll_handles = []
+if os.name == 'nt':
+    for _directory in _cuda_bins:
+        if _directory.is_dir():
+            os.environ['PATH'] = str(_directory) + os.pathsep + os.environ.get('PATH', '')
+            _dll_handles.append(os.add_dll_directory(str(_directory)))
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from filelock import FileLock
 
 from baselines import BASELINES, Baseline
 from data import BENCHMARKS, SPLITS, condition, load_data, training_batch
@@ -21,7 +33,7 @@ from model import ABLATIONS, HCRDRIB, classification_loss
 PROTOCOL = 'v2-fixed-1'
 CORE = ('late', 'tmc', 'etmc', 'qmf', 'mmdynamics', 'no_ib', 'fixed_ib', 'dynamic_kl', 'dynamic_risk', 'full')
 ALL = CORE + tuple(sorted((BASELINES | ABLATIONS) - set(CORE)))
-SEEDS = (11, 22, 33)
+SEEDS = (11, 22, 33, 44, 55)
 
 
 @dataclass(frozen=True)
@@ -111,8 +123,9 @@ def fit(model, train, method, seed, settings, device):
 
 
 def evaluation_plan(modalities, quick=False):
-    cases = [('clean', None), ('gaussian', 0.2), ('gaussian', 0.5), ('gaussian', 0.9),
+    cases = [('clean', None), ('gaussian', 0.2), ('gaussian', 0.5), ('gaussian', 0.7), ('gaussian', 0.9),
              ('unseen_dropout', 0.5), ('conflict', None)]
+    cases.extend(('random_missing', p) for p in (0.2, 0.4, 0.6, 0.8))
     for i, name in enumerate(modalities):
         cases.extend((('only_noise', i), ('missing', i), ('only', i)))
     if quick:
@@ -293,7 +306,7 @@ def export_summary(reports, destination):
                 if value is not None:
                     group.setdefault(metric, []).append(value)
     columns = ('dataset', 'method', 'condition', 'metric', 'mean', 'std', 'n_seeds')
-    partial = destination.with_suffix('.tmp')
+    partial = destination.with_suffix('.' + uuid4().hex + '.tmp')
     with partial.open('w', encoding='utf-8-sig', newline='') as handle:
         writer = DictWriter(handle, fieldnames=columns)
         writer.writeheader()
@@ -301,16 +314,25 @@ def export_summary(reports, destination):
             for metric, values in sorted(group.items()):
                 writer.writerow(dict(zip(columns, [dataset, method, case, metric, np.mean(values),
                                                    np.std(values, ddof=1) if len(values) > 1 else '', len(values)])))
-    partial.replace(destination)
+    for attempt in range(20):
+        try:
+            partial.replace(destination)
+            break
+        except PermissionError:
+            if attempt == 19:
+                print(f'Summary is locked; measured result.json files remain saved. Pending table: {partial}', flush=True)
+            else:
+                sleep(0.25)
 
 
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--datasets', nargs='+', choices=BENCHMARKS, default=list(BENCHMARKS))
+    parser.add_argument('--datasets', nargs='+', choices=BENCHMARKS,
+                        default=['cmu_mosi', 'ch_sims', 'meld_small', 'iemocap'])
     parser.add_argument('--suite', choices=('core', 'full'), default='core')
     parser.add_argument('--methods', nargs='+', choices=ALL)
     parser.add_argument('--feature-dir', type=Path, default=Path('data/features'))
-    parser.add_argument('--run-dir', type=Path, default=Path('runs/fixed_v2'))
+    parser.add_argument('--run-dir', type=Path, default=Path('runs/small_fixed'))
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto')
     parser.add_argument('--inspect', action='store_true')
     parser.add_argument('--smoke', action='store_true', help='One epoch per stage, one seed, four test scenarios.')
@@ -339,12 +361,17 @@ def main():
         for method in dict.fromkeys(methods):
             for seed in seeds:
                 dest = out / name / method / str(seed)
-                report = run_one(name, data, classes, method, seed, dest, settings, device, fingerprint, args.smoke)
+                dest.mkdir(parents=True, exist_ok=True)
+                with FileLock(str(dest / '.run.lock')):
+                    report = run_one(name, data, classes, method, seed, dest, settings, device, fingerprint, args.smoke)
                 reports.append(report)
                 export_summary(reports, out / 'summary.csv')
     if reports:
+        reports = [json.loads(p.read_text(encoding='utf-8')) for p in out.glob('*/*/*/result.json')]
+        export_summary(reports, out / 'summary.csv')
         print(f'Summary: {out / "summary.csv"}')
 
 
 if __name__ == '__main__':
     main()
+
