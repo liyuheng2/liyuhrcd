@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Task risk validation (CUDA)" type="PythonConfigurationType" factoryName="Python">
+    <module name="liyuhrcd" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="SDK_HOME" value="" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/validate_improved.py" />
+    <option name="PARAMETERS" value="--device cuda --worker-results runs/task_risk_workers" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="MODULE_MODE" value="false" />
+    <method v="2" />
+  </configuration>
+</component>

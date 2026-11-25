@@ -7,6 +7,10 @@ import torch
 
 SPLITS = ('train', 'val', 'test')
 BENCHMARKS = {
+    'cmu_mosi': ('text', 'audio', 'video'),
+    'ch_sims': ('text', 'audio', 'video'),
+    'meld_small': ('text', 'audio'),
+    'iemocap': ('text', 'audio', 'video'),
     'upmc_food101': ('image', 'text'),
     'n24news': ('image', 'text'),
     'meld': ('text', 'audio', 'video'),
@@ -96,6 +100,11 @@ def condition(data, kind, argument=None):
         strength[rows, picked] = amount * mask[rows, picked]
         noise = 'dropout' if kind == 'unseen_dropout' else 'gaussian'
         inputs = inject(clean, mask, strength, rng, noise)
+    elif kind == 'random_missing':
+        mask &= torch.rand(mask.shape, generator=rng) >= argument
+        lost = ~mask.any(1)
+        picked = random_index(original, rng)
+        mask[rows[lost], picked[lost]] = True
     elif kind == 'missing':
         mask[:, argument] = False
         lost = ~mask.any(1)
@@ -119,3 +128,4 @@ def condition(data, kind, argument=None):
                     inputs[i][row] = clean[i][donor]
                     swaps[row, i] = True
     return inputs, mask, strength, swaps, is_cross_label
+
