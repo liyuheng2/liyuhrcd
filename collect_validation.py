@@ -11,7 +11,8 @@ from main import SEEDS, VALIDATION, export_summary
 
 DATASETS = ('ch_sims', 'mintrec', 'upmc_food101')
 KEY_CASES = ('clean', 'gaussian_0.9', 'unseen_dropout_0.5', 'conflict')
-METRICS = ('accuracy', 'macro_f1', 'aurc', 'error_auroc', 'ece15', 'nll')
+METRICS = ('accuracy', 'macro_f1', 'aurc', 'error_auroc', 'maxprob_aurc',
+           'maxprob_error_auroc', 'ece15', 'nll')
 
 
 def write_csv(path, rows, fields):

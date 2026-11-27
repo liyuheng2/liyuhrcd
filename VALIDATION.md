@@ -22,6 +22,12 @@ python main.py --suite validation --device auto --run-dir runs/recommended
 
 PyCharm 可运行 **EC-RIB Three Dataset Validation**。每个实验单元保存参数、特征缓存 SHA-256、结果和风险覆盖曲线。同一命令可继续未完成的单元。可用 `--datasets ch_sims` 限定单个数据集。
 
+复现本次 CH-SIMS 划分需使用 `scikit-learn==1.6.1`。使用仓库锁定的 NumPy 2.2.6、SciPy 1.15.3 和 scikit-learn 1.6.1 重建后，三份缓存均与实验输入逐字节一致。较新的 scikit-learn 可能生成不同的源视频折。
+
+```powershell
+python collect_validation.py --run-dir runs/recommended --output results
+```
+
 ## 固定设置
 
 AdamW，学习率 0.001，权重衰减 0.0001，批大小 128，隐藏宽度 128，风险潜变量 16，β 为 0.001，γ 为 1。种子使用 11、22、33。分类预热 5 轮、风险预热 5 轮、联合阶段 30 轮。基线保持相同的分类更新轮数。采用最后一轮权重，验证集用于选择 80% 目标覆盖的甄别阈值。
