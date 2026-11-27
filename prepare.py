@@ -6,6 +6,7 @@ from hashlib import file_digest
 import json
 from pathlib import Path
 import pickle
+import re
 import shutil
 import subprocess
 from urllib.parse import urlsplit
@@ -24,6 +25,7 @@ from data import BENCHMARKS, SPLITS
 
 
 MOSEI_SHA256 = 'ad8b23d50557045e7d47959ce6c5b955d8d983f2979c7d9b7b9226f6dd6fec1f'
+CH_SIMS_SHA256 = 'c9e20c13ec0454d98bb9c1e520e490c75146bfa2dfeeea78d84de047dbdd442f'
 
 
 def media_index(root, extensions):
@@ -105,6 +107,26 @@ def meld_rows(root, annotations):
     return records
 
 
+def mintrec_rows(root, annotations):
+    videos = {}
+    for path in root.rglob('*.mp4'):
+        parts = '_'.join(path.relative_to(root).parts)
+        match = re.search(r'(S\d+)[_ -]*(E\d+)[_ -]*(\d+)$', parts.removesuffix('.mp4'), re.I)
+        if match is None:
+            continue
+        index = '_'.join(match.groups()).upper()
+        if index in videos:
+            raise ValueError(f'Duplicate MIntRec video ID {index}')
+        videos[index] = path
+    records = {}
+    for split, original in zip(SPLITS, ('train', 'dev', 'test')):
+        with (annotations / f'{original}.tsv').open(encoding='utf-8-sig', newline='') as handle:
+            records[split] = [(row['id'], row['id'], row['label'].strip().lower(), row['text'],
+                               videos.get(row['id'].upper()))
+                              for row in DictReader(handle, delimiter='\t')]
+    return records
+
+
 class VisionEncoder:
     def __init__(self, device):
         from torchvision.models import resnet18, ResNet18_Weights
@@ -150,7 +172,8 @@ def decode(command):
 def open_video(path):
     if path is None:
         return [], None
-    command = ['ffmpeg', '-v', 'error', '-nostdin', '-threads', '1', '-filter_threads', '1', '-i', str(path)]
+    command = [shutil.which('ffmpeg') or 'ffmpeg', '-v', 'error', '-nostdin',
+               '-threads', '1', '-filter_threads', '1', '-i', str(path)]
     video = decode(command + ['-an', '-vf', 'fps=1:start_time=0,scale=224:224',
                               '-frames:v', '6', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'])
     if not video:
@@ -189,9 +212,10 @@ def make_media_cache(records, out, name, device):
         raise ValueError('Insufficient training text vocabulary.')
     reduce_text = TruncatedSVD(dimensions, random_state=11).fit(matrix)
     vision = VisionEncoder(device)
-    is_video = name == 'meld'
+    is_video = name in {'meld', 'mintrec'}
     if is_video and shutil.which('ffmpeg') is None:
-        raise RuntimeError('MELD requires ffmpeg on PATH. See README.')
+        raise RuntimeError(f'{name} requires ffmpeg on PATH. See README.')
+    batch_size = 128 if device == 'cuda' and not is_video else 32
     with ThreadPoolExecutor(max_workers=4) as workers:
         for split, rows in records.items():
             ids, groups, y, strings, paths = zip(*rows)
@@ -201,8 +225,8 @@ def make_media_cache(records, out, name, device):
             video_mask = np.zeros(len(rows), dtype=bool)
             audio_mask = np.zeros(len(rows), dtype=bool)
             audio = np.zeros((len(rows), 40), dtype=np.float32)
-            for start in range(0, len(rows), 32):
-                end = min(start + 32, len(rows))
+            for start in range(0, len(rows), batch_size):
+                end = min(start + batch_size, len(rows))
                 if is_video:
                     batch = list(workers.map(open_video, paths[start:end]))
                     media, acoustic = zip(*batch)
@@ -275,6 +299,79 @@ def make_mosei_cache(path, out):
     (out / 'labels.json').write_text('{"negative":0,"neutral":1,"positive":2}', encoding='utf-8')
 
 
+def make_ch_sims_cache(path, out):
+    with path.open('rb') as handle:
+        if file_digest(handle, 'sha256').hexdigest() != CH_SIMS_SHA256:
+            raise ValueError('CH-SIMS feature archive SHA-256 differs from the declared source.')
+        handle.seek(0)
+        source = pickle.load(handle)
+    labels, ids, groups = [], [], []
+    views = [[], [], []]
+    for split in ('train', 'valid', 'test'):
+        block = source.pop(split)
+        labels.extend(np.sign(np.asarray(block['regression_labels']).reshape(-1)).astype(np.int64) + 1)
+        ids.extend(np.asarray(block['id']).astype(str))
+        for chunks, name in zip(views, ('text', 'audio', 'vision')):
+            chunks.append(pooled(block[name], block.get(f'{name}_lengths'))[0])
+    for sample in ids:
+        groups.append(sample.split('$_$')[0])
+    ids, groups, labels = np.asarray(ids), np.asarray(groups), np.asarray(labels)
+    if len(set(ids)) != len(ids):
+        raise ValueError('CH-SIMS source contains duplicate sample IDs.')
+    views = [np.concatenate(chunks) for chunks in views]
+    mask = np.stack([np.isfinite(x).all(1) & (x != 0).any(1) for x in views], 1)
+    folds = [hold for _, hold in StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=20261122)
+             .split(np.zeros(len(labels)), labels, groups)]
+    out.mkdir(parents=True, exist_ok=True)
+    for split, rows in zip(SPLITS, (np.concatenate(folds[:3]), folds[3], folds[4])):
+        rows = rows[mask[rows].any(1)]
+        atomic_cache(out / f'{split}.npz', [np.nan_to_num(x[rows]) for x in views], mask[rows], labels[rows],
+                     ids[rows], groups[rows])
+    (out / 'labels.json').write_text('{"negative":0,"neutral":1,"positive":2}', encoding='utf-8')
+
+
+def make_mintrec_feature_cache(source, annotations, out):
+    """Pool the two original author-released sequence dictionaries."""
+    paths = [source / name / f'{name.removesuffix("_data")}_feats.pkl' for name in ('audio_data', 'video_data')]
+    records = mintrec_rows(source, annotations)
+    tables = []
+    for file in paths:
+        with file.open('rb') as handle:
+            sequences = pickle.load(handle)
+        table = {}
+        for key, value in sequences.items():
+            key = '_'.join(map(str, key)) if isinstance(key, tuple) else str(key)
+            values = np.asarray(value, dtype=np.float32)
+            if values.ndim < 2:
+                raise ValueError(f'Invalid {file.name} sequence for {key}')
+            frames = values.reshape(-1, values.shape[-1])
+            valid = np.isfinite(frames).all(1) & (frames != 0).any(1)
+            if valid.any():
+                table[key.upper()] = frames[valid].mean(0)
+        tables.append(table)
+    text_model = TfidfVectorizer(max_features=40000, ngram_range=(1, 2), sublinear_tf=True)
+    train = text_model.fit_transform(row[3] for row in records['train'])
+    transform = TruncatedSVD(min(256, min(train.shape) - 1), random_state=11).fit(train)
+    labels = {name: i for i, name in enumerate(sorted({row[2] for row in records['train']}))}
+    out.mkdir(parents=True, exist_ok=True)
+    for split, rows in records.items():
+        ids, groups, y, strings, _ = zip(*rows)
+        matrices = [transform.transform(text_model.transform(strings))]
+        available = [np.array([bool(text.strip()) for text in strings])]
+        for table in tables:
+            empty = np.zeros_like(next(iter(table.values())))
+            keys = [identity.upper() for identity in ids]
+            presence = np.array([key in table for key in keys])
+            if not presence.any():
+                raise ValueError(f'{split}: no MIntRec features matched the annotated clip IDs.')
+            matrices.append(np.stack([table.get(key, empty) for key in keys]))
+            available.append(presence)
+        mask = np.stack(available, 1)
+        atomic_cache(out / f'{split}.npz', matrices, mask, np.array([labels[label] for label in y]), ids, groups)
+        print(f'mintrec {split}: rows={len(rows)}, available={mask.sum(0).tolist()}', flush=True)
+    (out / 'labels.json').write_text(json.dumps(labels, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('dataset', choices=BENCHMARKS)
@@ -297,9 +394,17 @@ def main():
     if args.dataset == 'cmu_mosei':
         make_mosei_cache(args.source, target)
         return
+    if args.dataset == 'ch_sims':
+        make_ch_sims_cache(args.source, target)
+        return
     if args.metadata is None:
         parser.error('--metadata is required for media datasets.')
-    adapter = {'upmc_food101': food_rows, 'n24news': news_rows, 'meld': meld_rows}[args.dataset]
+    if args.dataset == 'mintrec' and (args.source / 'audio_data' / 'audio_feats.pkl').is_file():
+        if args.limit_per_class:
+            parser.error('Pilot caps apply to raw media preparation only.')
+        make_mintrec_feature_cache(args.source, args.metadata, target)
+        return
+    adapter = {'upmc_food101': food_rows, 'n24news': news_rows, 'meld': meld_rows, 'mintrec': mintrec_rows}[args.dataset]
     records = adapter(args.source, args.metadata)
     if args.limit_per_class:
         rng = np.random.default_rng(20261122)
@@ -312,7 +417,7 @@ def main():
                     counter[row[2]] += 1
             records[split] = picked
     device = 'cuda' if args.device == 'auto' and torch.cuda.is_available() else args.device
-    make_media_cache(records, target, 'cpu' if device == 'auto' else device)
+    make_media_cache(records, target, args.dataset, 'cpu' if device == 'auto' else device)
 
 
 if __name__ == '__main__':

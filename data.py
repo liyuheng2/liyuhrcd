@@ -11,7 +11,10 @@ BENCHMARKS = {
     'n24news': ('image', 'text'),
     'meld': ('text', 'audio', 'video'),
     'cmu_mosei': ('text', 'audio', 'video'),
+    'ch_sims': ('text', 'audio', 'video'),
+    'mintrec': ('text', 'audio', 'video'),
 }
+DEFAULT_BENCHMARKS = ('upmc_food101', 'n24news', 'meld', 'cmu_mosei')
 
 
 def load_data(root, name):

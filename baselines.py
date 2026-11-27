@@ -6,7 +6,8 @@ from torch.nn import functional as F
 from model import EPS, masked_mean
 
 
-BASELINES = {'late', 'concat', 'gate', 'tmc', 'etmc', 'qmf', 'mmdynamics'}
+BASELINES = {'late', 'concat', 'gate', 'tmc', 'etmc', 'qmf', 'mmdynamics',
+             'cdpr_features', 'sed_ud_features'}
 
 
 def evidential_loss(alpha, labels, anneal):

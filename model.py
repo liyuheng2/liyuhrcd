@@ -159,14 +159,16 @@ class HCRDRIB(nn.Module):
         evidence_c = (confidence * (result['d'] - clean_d)).clamp_min(0)
         return (strength, delta_h, target_c), (strength, delta_h.abs(), evidence_c)
 
-    def risk_losses(self, result, targets, evidence, rng):
-        errors, rates = [], []
+    def risk_losses(self, result, targets, evidence, rng, capture=False):
+        errors, rates, active = [], [], []
         names = ('no_o', 'no_a', 'no_c')
         zero = result['p'].new_zeros(())
         for task, (pred, target, delta, kl, mask) in enumerate(zip(
             result['pred_risk'], targets, evidence, result['kl'], result['masks']
         )):
-            if self.mode == names[task] or (task == 2 and self.mode == 'raw_jsd') or not mask.any():
+            if self.mode == names[task] or (task == 2 and self.mode == 'raw_jsd'):
+                continue
+            if not capture and not mask.any():
                 continue
             if self.mode == 'shuffled_evidence':
                 valid = delta[mask]
@@ -181,6 +183,14 @@ class HCRDRIB(nn.Module):
             error = ((pred - target) / (2 if task == 1 else 1)).square()
             rates.append(masked_mean(kl / compress, mask))
             errors.append(masked_mean(retain * error, mask))
+            if capture:
+                active.append(mask.any())
         if not errors:
             return zero, zero
+        if capture:
+            valid = torch.stack(active)
+            count = valid.sum().clamp_min(1)
+            chosen = torch.stack(errors).masked_fill(~valid, -1e4)
+            risk = torch.where(valid.any(), chosen.logsumexp(0) - count.log(), zero)
+            return torch.stack(rates).sum() / count, risk
         return torch.stack(rates).mean(), torch.stack(errors).logsumexp(0) - log(len(errors))

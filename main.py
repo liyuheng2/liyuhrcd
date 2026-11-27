@@ -13,13 +13,16 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from baselines import BASELINES, Baseline
-from data import BENCHMARKS, SPLITS, condition, load_data, training_batch
+from data import BENCHMARKS, DEFAULT_BENCHMARKS, SPLITS, condition, load_data, training_batch
 from metrics import detection, regression, summarize
 from model import ABLATIONS, HCRDRIB, classification_loss
+from paper_baselines import CDPRFeatures, SeDUDFeatures
 
 
 PROTOCOL = 'v2-fixed-1'
 CORE = ('late', 'tmc', 'etmc', 'qmf', 'mmdynamics', 'no_ib', 'fixed_ib', 'dynamic_kl', 'dynamic_risk', 'full')
+VALIDATION = ('full', 'qmf', 'sed_ud_features', 'cdpr_features', 'fixed_ib',
+              'no_ib', 'dynamic_kl', 'dynamic_risk', 'no_c', 'no_csf')
 ALL = CORE + tuple(sorted((BASELINES | ABLATIONS) - set(CORE)))
 SEEDS = (11, 22, 33)
 
@@ -50,8 +53,9 @@ def synchronize(device):
         torch.cuda.synchronize(device)
 
 
-def fit(model, train, method, seed, settings, device):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=settings.lr, weight_decay=settings.weight_decay)
+def fit(model, train, method, seed, settings, device, cuda_graph=False):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=settings.lr, weight_decay=settings.weight_decay,
+                                  fused=True if cuda_graph else None, capturable=cuda_graph)
     loader = batches(train, settings.batch, torch.Generator().manual_seed(seed + 351))
     perturb = torch.Generator().manual_seed(seed + 712)
     shuffle_evidence = torch.Generator().manual_seed(seed + 831)
@@ -61,13 +65,18 @@ def fit(model, train, method, seed, settings, device):
     logs = []
     classification_epoch = 0
     for phase, epochs in phases:
+        graph, static, recorded = None, None, None
+        warmup = 0
         # Reset the joint data RNG so HCRD's risk-only phase cannot alter baseline perturbations.
         if phase == 'joint':
             loader = batches(train, settings.batch, torch.Generator().manual_seed(seed + 1351))
             perturb.manual_seed(seed + 1712)
+            if isinstance(model, SeDUDFeatures):
+                model.enable_selection()
         for epoch in range(epochs):
             model.train()
             totals = np.zeros(4)
+            device_totals = torch.zeros(4, device=device) if cuda_graph else None
             n = 0
             for *clean, mask, y, rows in loader:
                 if phase == 'clean':
@@ -75,31 +84,59 @@ def fit(model, train, method, seed, settings, device):
                     strength = torch.zeros_like(mask, dtype=torch.float32)
                 else:
                     x, mask, strength = training_batch(clean, mask, perturb)
-                x = [v.to(device) for v in x]
-                mask, y = mask.to(device), y.to(device)
-                zero = y.new_zeros((), dtype=torch.float32)
-                kl, risk = zero, zero
-                if method in BASELINES:
-                    result = model(x, mask)
-                    task = model.loss(result, y, mask, rows.to(device), classification_epoch)
+                arity = len(x)
+                packed = (*x, *clean, mask, y, rows, strength)
+
+                def step(items, capture=False):
+                    noisy, original = items[:arity], items[arity:2 * arity]
+                    present, labels, row_ids, severity = items[-4:]
+                    zero = labels.new_zeros((), dtype=torch.float32)
+                    kl, risk = zero, zero
+                    if method in BASELINES:
+                        result = model(noisy, present)
+                        task = model.loss(result, labels, present, row_ids, classification_epoch)
+                    else:
+                        result = model(noisy, present, uniform=phase == 'clean')
+                        task = zero if phase == 'risk' else classification_loss(
+                            result, labels, present, use_unimodal=method != 'no_unimodal')
+                        if phase != 'clean':
+                            targets, evidence = model.references(original, result, severity)
+                            kl, risk = model.risk_losses(result, targets, evidence, shuffle_evidence, capture=capture)
+                    total = task + settings.beta * kl + settings.gamma * risk
+                    if not cuda_graph and not torch.isfinite(total):
+                        raise FloatingPointError(f'{method} {phase} {epoch + 1}: non-finite loss')
+                    optimizer.zero_grad(set_to_none=True)
+                    if total.requires_grad:
+                        total.backward()
+                        if phase == 'clean' and isinstance(model, SeDUDFeatures):
+                            model.record_importance()
+                        optimizer.step()
+                    return torch.stack((total.detach(), task.detach(), kl.detach(), risk.detach()))
+
+                if cuda_graph and len(y) == settings.batch and warmup >= 3:
+                    if graph is None:
+                        torch.cuda.synchronize(device)
+                        static = tuple(item.to(device) for item in packed)
+                        graph = torch.cuda.CUDAGraph()
+                        with torch.cuda.graph(graph):
+                            recorded = step(static, capture=True)
+                    else:
+                        for target, current in zip(static, packed):
+                            target.copy_(current)
+                    graph.replay()
+                    values = recorded
                 else:
-                    result = model(x, mask, uniform=phase == 'clean')
-                    task = zero if phase == 'risk' else classification_loss(
-                        result, y, mask, use_unimodal=method != 'no_unimodal'
-                    )
-                    if phase != 'clean':
-                        targets, evidence = model.references([v.to(device) for v in clean], result, strength.to(device))
-                        kl, risk = model.risk_losses(result, targets, evidence, shuffle_evidence)
-                total = task + settings.beta * kl + settings.gamma * risk
-                if not torch.isfinite(total):
-                    raise FloatingPointError(f'{method} {phase} {epoch + 1}: non-finite loss')
-                optimizer.zero_grad(set_to_none=True)
-                # A batch without any active risk supervision can occur during a risk ablation.
-                if total.requires_grad:
-                    total.backward()
-                    optimizer.step()
+                    values = step(tuple(item.to(device) for item in packed))
+                    warmup += 1
                 n += len(y)
-                totals += np.array([total.item(), task.item(), kl.item(), risk.item()]) * len(y)
+                if cuda_graph:
+                    device_totals.add_(values, alpha=len(y))
+                else:
+                    totals += values.cpu().numpy().astype(np.float64) * len(y)
+            if cuda_graph:
+                totals = device_totals.cpu().numpy()
+                if not np.isfinite(totals).all():
+                    raise FloatingPointError(f'{method} {phase} {epoch + 1}: non-finite loss')
             if phase != 'risk':
                 classification_epoch += 1
             log = dict(zip(('total', 'task', 'kl', 'risk'), (totals / n).tolist()))
@@ -209,11 +246,13 @@ def atomic_json(path, content):
     temp.replace(path)
 
 
-def run_one(name, data, classes, method, seed, directory, settings, device, fingerprint, quick):
+def run_one(name, data, classes, method, seed, directory, settings, device, fingerprint, quick, cuda_graph=False):
     directory.mkdir(parents=True, exist_ok=True)
     config = {'protocol': PROTOCOL, 'dataset': name, 'method': method, 'seed': seed,
               'config': asdict(settings), 'device': str(device), 'torch': str(torch.__version__),
               'fingerprint': fingerprint, 'quick': quick}
+    if cuda_graph:
+        config['cuda_graph'] = True
     report = directory / 'result.json'
     if report.exists():
         previous = json.loads(report.read_text(encoding='utf-8'))
@@ -223,7 +262,11 @@ def run_one(name, data, classes, method, seed, directory, settings, device, fing
         return previous
     torch.manual_seed(seed)
     widths = [x.shape[-1] for x in data['train'][0]]
-    if method in BASELINES:
+    if method == 'sed_ud_features':
+        model = SeDUDFeatures(widths, classes, settings.width, BENCHMARKS[name].index('text'))
+    elif method == 'cdpr_features':
+        model = CDPRFeatures(widths, classes, settings.width)
+    elif method in BASELINES:
         model = Baseline(widths, classes, method, len(data['train'][2]), settings.width)
     else:
         model = HCRDRIB(widths, classes, method, settings.width, settings.latent)
@@ -232,7 +275,7 @@ def run_one(name, data, classes, method, seed, directory, settings, device, fing
         torch.cuda.reset_peak_memory_stats(device)
     print(f'{name} {method} seed={seed} device={device}', flush=True)
     started = perf_counter()
-    loss = fit(model, data['train'], method, seed, settings, device)
+    loss = fit(model, data['train'], method, seed, settings, device, cuda_graph)
     elapsed = perf_counter() - started
     peak = torch.cuda.max_memory_allocated(device) / 1024 ** 2 if device.type == 'cuda' else None
     _, _, val_score = evaluate(model, data['val'], 'clean', None, device, settings)
@@ -306,13 +349,15 @@ def export_summary(reports, destination):
 
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument('--datasets', nargs='+', choices=BENCHMARKS, default=list(BENCHMARKS))
-    parser.add_argument('--suite', choices=('core', 'full'), default='core')
+    parser.add_argument('--datasets', nargs='+', choices=BENCHMARKS)
+    parser.add_argument('--suite', choices=('core', 'full', 'validation'), default='core')
     parser.add_argument('--methods', nargs='+', choices=ALL)
     parser.add_argument('--feature-dir', type=Path, default=Path('data/features'))
     parser.add_argument('--run-dir', type=Path, default=Path('runs/fixed_v2'))
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto')
     parser.add_argument('--inspect', action='store_true')
+    parser.add_argument('--skip-summary', action='store_true', help='Defer summary export when running disjoint workers.')
+    parser.add_argument('--cuda-graph', action='store_true', help='Replay fixed-size training batches with CUDA graphs.')
     parser.add_argument('--smoke', action='store_true', help='One epoch per stage, one seed, four test scenarios.')
     args = parser.parse_args()
     torch.set_num_threads(min(torch.get_num_threads(), 4))
@@ -322,9 +367,12 @@ def main():
                           else 'cpu' if args.device == 'auto' else args.device)
     settings = Settings(clean_epochs=1, risk_epochs=1, joint_epochs=1) if args.smoke else Settings()
     seeds = SEEDS[:1] if args.smoke else SEEDS
-    methods = args.methods or (ALL if args.suite == 'full' else CORE)
+    methods = args.methods or {'core': CORE, 'full': ALL, 'validation': VALIDATION}[args.suite]
+    if args.cuda_graph and (device.type != 'cuda' or not set(methods).issubset(VALIDATION)):
+        parser.error('--cuda-graph requires CUDA and methods from the validation suite.')
     out = args.run_dir / ('smoke' if args.smoke else 'protocol')
-    datasets = dict.fromkeys(args.datasets)
+    defaults = ('ch_sims', 'mintrec', 'upmc_food101') if args.suite == 'validation' else DEFAULT_BENCHMARKS
+    datasets = dict.fromkeys(args.datasets or defaults)
     missing = [name for name in datasets if any(not (args.feature_dir / name / f'{s}.npz').is_file() for s in SPLITS)]
     if missing:
         parser.error(f'Missing prepared caches in {args.feature_dir}: {", ".join(missing)}. See prepare.py and README.')
@@ -336,13 +384,17 @@ def main():
         if args.inspect:
             continue
         fingerprint = digest_cache(args.feature_dir, name)
+        capture = args.cuda_graph or (args.suite == 'validation' and name == 'upmc_food101'
+                                       and device.type == 'cuda' and set(methods).issubset(VALIDATION))
         for method in dict.fromkeys(methods):
             for seed in seeds:
                 dest = out / name / method / str(seed)
-                report = run_one(name, data, classes, method, seed, dest, settings, device, fingerprint, args.smoke)
+                report = run_one(name, data, classes, method, seed, dest, settings, device,
+                                 fingerprint, args.smoke, capture)
                 reports.append(report)
-                export_summary(reports, out / 'summary.csv')
-    if reports:
+                if not args.skip_summary:
+                    export_summary(reports, out / 'summary.csv')
+    if reports and not args.skip_summary:
         print(f'Summary: {out / "summary.csv"}')
 
 
